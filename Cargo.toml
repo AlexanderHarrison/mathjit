@@ -8,3 +8,14 @@ edition = "2021"
 [dependencies]
 eq_parse = { path = "../eq_parse/" }
 dynasmrt = "1.2"
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "benchmarks"
+harness = false
+
+[lib]
+doctest = false
+bench = false

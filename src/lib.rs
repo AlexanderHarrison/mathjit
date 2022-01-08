@@ -5,7 +5,7 @@ mod assemble;
 
 pub use eq_parse;
 
-pub type RetPtr = unsafe extern "C" fn(*const f32) -> f32;
+pub type RetPtr = unsafe extern "C" fn(input: *const f32, output: *mut f32, len: u64);
 //pub type RetPtr = unsafe extern "C" fn(input: *const f32, output: *mut f32, len: usize);
 
 pub struct CompiledEquation {
@@ -16,9 +16,7 @@ pub struct CompiledEquation {
  
 impl CompiledEquation {
     pub fn new(eq: &Equation) -> Self {
-        println!("{:?}", eq);
         let high_level_instructions = compile::compile_equation(eq);
-        println!("{:#?}", high_level_instructions);
 
         let (buf, raw_fn) = assemble::assemble(high_level_instructions, eq.variables.len());
 
@@ -29,11 +27,15 @@ impl CompiledEquation {
         }
     }
 
-    pub fn temp_eval(&self, vars: &[f32]) -> f32 {
-        assert!(vars.len() == self.eq.variables.len());
+    pub fn temp_eval(&self, vars: &[f32]) -> Box<[f32]> {
+        let var_count = self.eq.variables.len();
+        assert!(vars.len() % var_count == 0);
+        let out_count = vars.len() / var_count;
+        let mut output = vec![0.0; out_count].into_boxed_slice();
         unsafe { 
-            (self.raw_fn)(vars.as_ptr())
-        }
+            (self.raw_fn)(vars.as_ptr(), output.as_mut_ptr(), out_count as u64);
+        };
+        output
     }
 
     //pub fn evaluate(&self, data: &[f32]) -> Box<[f32]> {

@@ -12,14 +12,12 @@ use eq_parse::{Operation, Variable, Equation};
 #[allow(dead_code)]
 pub enum Inst {
     MoveF {dest: FloatReg, source: FloatReg},
-    MoveVar {dest: FloatReg, source: VariableIndex},
     MoveFConst {dest: FloatReg, source: f32},
     Negate(FloatReg),
     AddF {dest: FloatReg, op: FloatReg},
+    SubF {dest: FloatReg, op: FloatReg},
     MulF {dest: FloatReg, op: FloatReg},
 }
-
-pub type VariableIndex = u32;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct FloatRegState {
@@ -33,12 +31,6 @@ impl FloatRegState {
     }
 }
 
-//#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-//pub enum FloatSource {
-//    Reg(FloatReg),
-//    Var(VariableIndex),
-//}
-
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct FloatReg(pub usize);
 
@@ -50,14 +42,18 @@ pub fn compile_equation(eq: &Equation) -> Box<[Inst]> {
     insts.into_boxed_slice()
 }
 
+fn var_reg(vars: &[Variable], v: Variable) -> FloatReg {
+    FloatReg(vars.iter().position(|&p| p == v).unwrap())
+}
+
 pub fn compile_operation(op: &Operation, insts: &mut Vec<Inst>, vars: &[Variable], reg_state: FloatRegState) {
     match op {
         Operation::Literal(n) => {
             insts.push(Inst::MoveFConst { dest: reg_state.low_reg(), source: *n });
         },
         Operation::Variable(v) => {
-            let var = vars.iter().position(|&p| p == *v).unwrap() as VariableIndex;
-            insts.push(Inst::MoveVar { dest: reg_state.low_reg(), source: var });
+            let vreg = var_reg(vars, *v);
+            insts.push(Inst::MoveF { dest: reg_state.low_reg(), source: vreg });
         },
         Operation::Neg(op) => {
             compile_operation(op.as_ref(), insts, vars, reg_state);
@@ -68,8 +64,20 @@ pub fn compile_operation(op: &Operation, insts: &mut Vec<Inst>, vars: &[Variable
             compile_operation(&ops[0], insts, vars, reg_state);
             let incremented_reg_state = reg_state.incremented();
             for op in ops[1..].iter() {
-                compile_operation(op, insts, vars, incremented_reg_state);
-                insts.push(Inst::AddF { dest: reg_state.low_reg(), op: incremented_reg_state.low_reg() } );
+                match op {
+                    Operation::Neg(next_op) => {
+                        compile_operation(next_op, insts, vars, incremented_reg_state);
+                        insts.push(Inst::SubF { dest: reg_state.low_reg(), op: incremented_reg_state.low_reg() } );
+                    },
+                    Operation::Variable(v) => {
+                        let vreg = var_reg(vars, *v);
+                        insts.push(Inst::AddF { dest: reg_state.low_reg(), op: vreg });
+                    },
+                    op => {
+                        compile_operation(op, insts, vars, incremented_reg_state);
+                        insts.push(Inst::AddF { dest: reg_state.low_reg(), op: incremented_reg_state.low_reg() } );
+                    }
+                }
             }
         },
         Operation::Mul(ops) => {
@@ -77,8 +85,16 @@ pub fn compile_operation(op: &Operation, insts: &mut Vec<Inst>, vars: &[Variable
             compile_operation(&ops[0], insts, vars, reg_state);
             let incremented_reg_state = reg_state.incremented();
             for op in ops[1..].iter() {
-                compile_operation(op, insts, vars, incremented_reg_state);
-                insts.push(Inst::MulF { dest: reg_state.low_reg(), op: incremented_reg_state.low_reg() } );
+                match op {
+                    Operation::Variable(v) => {
+                        let vreg = var_reg(vars, *v);
+                        insts.push(Inst::MulF { dest: reg_state.low_reg(), op: vreg });
+                    },
+                    op => {
+                        compile_operation(op, insts, vars, incremented_reg_state);
+                        insts.push(Inst::MulF { dest: reg_state.low_reg(), op: incremented_reg_state.low_reg() } );
+                    }
+                }
             }
         }
     }
@@ -141,12 +157,6 @@ impl Inst {
                     ; movss dest, source
                 );
             },
-            Inst::MoveVar { dest, source: v } => {
-                let var_reg = FloatReg(v as usize);
-                dyn_reg!(assembler, (dest, var_reg)
-                    ; movss dest, var_reg
-                );
-            },
             Inst::MoveFConst {dest, source} => {
                 let source_bits = source.to_ne_bytes();
                 let source_bits: u32 = unsafe { std::mem::transmute(source_bits) };
@@ -160,6 +170,11 @@ impl Inst {
             Inst::AddF {dest, op} => {
                 dyn_reg!(assembler, (dest, op)
                     ; addss dest, op
+                );
+            },
+            Inst::SubF {dest, op} => {
+                dyn_reg!(assembler, (dest, op)
+                    ; subss dest, op
                 );
             },
             Inst::MulF {dest, op} => {
