@@ -1,5 +1,5 @@
 fn main() {
-    let eq = eq_parse::parse_equation("2xx").unwrap();
+    let eq = eq_parse::parse_equation("x + y").unwrap();
     let compiled = mathjit::CompiledEquation::new(&eq);
-    println!("{:?}", compiled.temp_eval(2.4));
+    println!("{:?}", compiled.temp_eval(&[1.0, 2.0]));
 }

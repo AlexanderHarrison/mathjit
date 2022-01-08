@@ -3,219 +3,170 @@
 // output ptr: rsi
 // len: rdx
 
-// XMM0 is the target register of all operations
-// XMM15 is reserved for var 1
-use eq_parse::{Operation, Variable};
+// The lowest XMM registers are reserved for variables.
+// E.g for x+y, XMM0 is reserved for x and XMM1 reserved for y 
+use eq_parse::{Operation, Variable, Equation};
 
 // Each Oper results in a single float in XMM0
 #[derive(Copy, Clone, PartialEq, Debug)]
 #[allow(dead_code)]
 pub enum Inst {
-    PushF(FloatReg),
-    PopF(FloatReg),
     MoveF {dest: FloatReg, source: FloatReg},
-    MoveVar {dest: FloatReg, source: Variable},
+    MoveVar {dest: FloatReg, source: VariableIndex},
     MoveFConst {dest: FloatReg, source: f32},
     Negate(FloatReg),
     AddF {dest: FloatReg, op: FloatReg},
     MulF {dest: FloatReg, op: FloatReg},
 }
 
+pub type VariableIndex = u32;
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub enum FloatReg {
-    XMM0,
-    XMM1,
+pub struct FloatRegState {
+    pub lowest: usize
 }
 
-//#[derive(Copy, Clone, PartialEq)]
-//enum RegularReg {
-//    RDI,
-//    RSI,
-//    RDX,
+impl FloatRegState {
+    fn low_reg(self) -> FloatReg { FloatReg(self.lowest) }
+    fn incremented(self) -> FloatRegState {
+        FloatRegState { lowest: self.lowest + 1 }
+    }
+}
+
+//#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+//pub enum FloatSource {
+//    Reg(FloatReg),
+//    Var(VariableIndex),
 //}
 
-pub fn compile_operation(op: &Operation, insts: &mut Vec<Inst>) {
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct FloatReg(pub usize);
+
+pub fn compile_equation(eq: &Equation) -> Box<[Inst]> {
+    let mut insts = Vec::new();
+
+    compile_operation(&eq.operation, &mut insts, &eq.variables, FloatRegState { lowest: eq.variables.len() });
+    
+    insts.into_boxed_slice()
+}
+
+pub fn compile_operation(op: &Operation, insts: &mut Vec<Inst>, vars: &[Variable], reg_state: FloatRegState) {
     match op {
         Operation::Literal(n) => {
-            insts.push(Inst::MoveFConst { dest: FloatReg::XMM0, source: *n });
+            insts.push(Inst::MoveFConst { dest: reg_state.low_reg(), source: *n });
         },
         Operation::Variable(v) => {
-            insts.push(Inst::MoveVar { dest: FloatReg::XMM0, source: *v });
+            let var = vars.iter().position(|&p| p == *v).unwrap() as VariableIndex;
+            insts.push(Inst::MoveVar { dest: reg_state.low_reg(), source: var });
         },
         Operation::Neg(op) => {
-            compile_operation(op.as_ref(), insts);
-            insts.push(Inst::Negate(FloatReg::XMM0));
+            compile_operation(op.as_ref(), insts, vars, reg_state);
+            insts.push(Inst::Negate(reg_state.low_reg()));
         },
         Operation::Add(ops) => {
             assert!(ops.len() > 0);
-            eval_all_to_stack(ops, insts);
-            insts.pop(); // want last result in xmm0, not stack
-    
-            for _ in 1..ops.len() {
-                insts.push(Inst::PopF(FloatReg::XMM1));
-                insts.push(Inst::AddF { dest: FloatReg::XMM0, op: FloatReg::XMM1 });
+            compile_operation(&ops[0], insts, vars, reg_state);
+            let incremented_reg_state = reg_state.incremented();
+            for op in ops[1..].iter() {
+                compile_operation(op, insts, vars, incremented_reg_state);
+                insts.push(Inst::AddF { dest: reg_state.low_reg(), op: incremented_reg_state.low_reg() } );
             }
         },
         Operation::Mul(ops) => {
             assert!(ops.len() > 0);
-            eval_all_to_stack(ops, insts);
-            insts.pop(); // want last result in xmm0, not stack
-
-            for _ in 1..ops.len() {
-                insts.push(Inst::PopF(FloatReg::XMM1));
-                insts.push(Inst::MulF { dest: FloatReg::XMM0, op: FloatReg::XMM1 });
+            compile_operation(&ops[0], insts, vars, reg_state);
+            let incremented_reg_state = reg_state.incremented();
+            for op in ops[1..].iter() {
+                compile_operation(op, insts, vars, incremented_reg_state);
+                insts.push(Inst::MulF { dest: reg_state.low_reg(), op: incremented_reg_state.low_reg() } );
             }
         }
     }
 }
 
-fn eval_all_to_stack(ops: &[Operation], insts: &mut Vec<Inst>) {
-    for op in ops {
-        compile_operation(op, insts);
-        insts.push(Inst::PushF(FloatReg::XMM0));
-    }
+#[macro_export]
+macro_rules! _recurse_expand {
+    ($ops:ident () ($(($alias:ident $reg:ident))*) $($t:tt)*) => (
+        dynasm!($ops
+            ; .arch x64
+            $(; .alias $alias, $reg)*
+            $($t)*
+        )
+    );
+    ($ops:ident ($a:ident $($to_alias:ident)*) ($(($alias:ident $reg:ident))*) $($t:tt)*) => (
+        match $a {
+            FloatReg(0) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm0)  $(($alias $reg))*) $($t)*),
+            FloatReg(1) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm1)  $(($alias $reg))*) $($t)*),
+            FloatReg(2) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm2)  $(($alias $reg))*) $($t)*),
+            FloatReg(3) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm3)  $(($alias $reg))*) $($t)*),
+            FloatReg(4) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm4)  $(($alias $reg))*) $($t)*),
+            FloatReg(5) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm5)  $(($alias $reg))*) $($t)*),
+            FloatReg(6) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm6)  $(($alias $reg))*) $($t)*),
+            FloatReg(7) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm7)  $(($alias $reg))*) $($t)*),
+            FloatReg(8) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm8)  $(($alias $reg))*) $($t)*),
+            FloatReg(9) =>  _recurse_expand!($ops ($($to_alias)*) (($a xmm9)  $(($alias $reg))*) $($t)*),
+            FloatReg(10) => _recurse_expand!($ops ($($to_alias)*) (($a xmm10) $(($alias $reg))*) $($t)*),
+            FloatReg(11) => _recurse_expand!($ops ($($to_alias)*) (($a xmm11) $(($alias $reg))*) $($t)*),
+            FloatReg(12) => _recurse_expand!($ops ($($to_alias)*) (($a xmm12) $(($alias $reg))*) $($t)*),
+            FloatReg(13) => _recurse_expand!($ops ($($to_alias)*) (($a xmm13) $(($alias $reg))*) $($t)*),
+            FloatReg(14) => _recurse_expand!($ops ($($to_alias)*) (($a xmm14) $(($alias $reg))*) $($t)*),
+            FloatReg(15) => _recurse_expand!($ops ($($to_alias)*) (($a xmm15) $(($alias $reg))*) $($t)*),
+            _ => unimplemented!()
+        }
+    )
+}
+
+#[macro_export]
+macro_rules! dyn_reg {
+    ($ops:ident, ($($reg:ident),+) $($t:tt)*) => (
+        _recurse_expand!($ops ($($reg)*) () $($t)*)
+    )
 }
 
 impl Inst {
     pub fn add_to_inst_stream(self, assembler: &mut dynasmrt::x64::Assembler) {
         use dynasmrt::{dynasm, DynasmApi};
         match self {
-            Inst::PushF(FloatReg::XMM0) => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; movd r0d, xmm0
-                    ; push r0
-                );
-            }
-            Inst::PushF(FloatReg::XMM1) => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; movd r0d, xmm1
-                    ; push r0
-                );
-            }
-            Inst::PopF(FloatReg::XMM0) => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; pop r0
-                    ; movd xmm0, r0d
-                );
-            }
-            Inst::PopF(FloatReg::XMM1) => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; pop r0
-                    ; movd xmm1, r0d
-                );
-            }
-            Inst::MoveF {dest: FloatReg::XMM0, source: FloatReg::XMM1} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; movss xmm0, xmm1
+            Inst::Negate(low) => {
+                let next_low = FloatReg(low.0 + 1);
+                dyn_reg!(assembler, (low, next_low)
+                    ; movss next_low, low
+                    ; pxor low, low
+                    ; subss low, next_low
                 );
             },
-            Inst::MoveF {dest: FloatReg::XMM1, source: FloatReg::XMM0} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; movss xmm1, xmm0
+            Inst::MoveF {dest, source} if dest == source => {},
+            Inst::MoveF {dest, source} => {
+                dyn_reg!(assembler, (dest, source)
+                    ; movss dest, source
                 );
             },
-            Inst::MoveF {dest: _, source: _} => {},
-            Inst::MoveVar { dest: FloatReg::XMM0, source: Variable(_) } => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; movss xmm0, xmm15
+            Inst::MoveVar { dest, source: v } => {
+                let var_reg = FloatReg(v as usize);
+                dyn_reg!(assembler, (dest, var_reg)
+                    ; movss dest, var_reg
                 );
             },
-            Inst::MoveVar { dest: FloatReg::XMM1, source: Variable(_) } => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; movss xmm1, xmm15
-                );
-            },
-            Inst::MoveFConst {dest: FloatReg::XMM0, source} => {
+            Inst::MoveFConst {dest, source} => {
                 let source_bits = source.to_ne_bytes();
                 let source_bits: u32 = unsafe { std::mem::transmute(source_bits) };
                 dynasm!(assembler
-                    ; .arch x64
                     ; mov r0d, DWORD source_bits as _
-                    ; movd xmm0, r0d
+                );
+                dyn_reg!(assembler, (dest)
+                    ; movd dest, r0d
                 );
             },
-            Inst::MoveFConst {dest: FloatReg::XMM1, source} => {
-                let source_bits = source.to_ne_bytes();
-                let source_bits: u32 = unsafe { std::mem::transmute(source_bits) };
-                dynasm!(assembler
-                    ; .arch x64
-                    ; mov r0d, DWORD source_bits as _
-                    ; movd xmm1, r0d
+            Inst::AddF {dest, op} => {
+                dyn_reg!(assembler, (dest, op)
+                    ; addss dest, op
                 );
             },
-            Inst::Negate(FloatReg::XMM0) => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; movss xmm1, xmm0
-                    ; pxor xmm0, xmm0
-                    ; subss xmm0, xmm1
+            Inst::MulF {dest, op} => {
+                dyn_reg!(assembler, (dest, op)
+                    ; mulss dest, op
                 );
             },
-            Inst::Negate(FloatReg::XMM1) => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; movss xmm2, xmm1
-                    ; pxor xmm1, xmm1
-                    ; subss xmm1, xmm2
-                );
-            },
-            Inst::AddF {dest: FloatReg::XMM0, op: FloatReg::XMM0} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; addss xmm0, xmm0
-                );
-            },
-            Inst::AddF {dest: FloatReg::XMM0, op: FloatReg::XMM1} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; addss xmm0, xmm1
-                );
-            },
-            Inst::AddF {dest: FloatReg::XMM1, op: FloatReg::XMM0} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; addss xmm1, xmm0
-                );
-            },
-            Inst::AddF {dest: FloatReg::XMM1, op: FloatReg::XMM1} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; addss xmm1, xmm1
-                );
-            },
-            Inst::MulF {dest: FloatReg::XMM0, op: FloatReg::XMM0} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; mulss xmm0, xmm0
-                );
-            },
-            Inst::MulF {dest: FloatReg::XMM0, op: FloatReg::XMM1} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; mulss xmm0, xmm1
-                );
-            },
-            Inst::MulF {dest: FloatReg::XMM1, op: FloatReg::XMM0} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; mulss xmm1, xmm0
-                );
-            },
-            Inst::MulF {dest: FloatReg::XMM1, op: FloatReg::XMM1} => {
-                dynasm!(assembler
-                    ; .arch x64
-                    ; mulss xmm1, xmm1
-                );
-            },
-            //_ => ()
         }
     }
 }
