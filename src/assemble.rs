@@ -18,7 +18,7 @@ pub fn assemble(insts: Box<[Inst]>, var_count: usize) -> (dynasmrt::mmap::Execut
 
     // move variables into low registers
     for j in 0..var_count {
-        let reg = FloatReg(j);
+        let reg = FloatReg(j as u8);
         let offset = j as i32 * 4;
         dyn_reg!(assembler, (reg)
             ; movd reg, [rdi+offset]
@@ -30,7 +30,7 @@ pub fn assemble(insts: Box<[Inst]>, var_count: usize) -> (dynasmrt::mmap::Execut
     }
 
     // move result into output array
-    let low_non_var_reg = FloatReg(var_count);
+    let low_non_var_reg = FloatReg(var_count as u8);
     dyn_reg!(assembler, (low_non_var_reg)
         ; movd eax, low_non_var_reg
     );

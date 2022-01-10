@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 eq_parse = { path = "../eq_parse/" }
-dynasmrt = "1.2"
+iced_x86 = "1.15"
 
 [dev-dependencies]
 criterion = "0.3"
