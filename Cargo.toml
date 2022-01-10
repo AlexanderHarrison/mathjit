@@ -7,7 +7,8 @@ edition = "2021"
 
 [dependencies]
 eq_parse = { path = "../eq_parse/" }
-iced_x86 = "1.15"
+iced-x86 = { version = "1.15", features = ["code_asm"] }
+memmap2 = "0.5"
 
 [dev-dependencies]
 criterion = "0.3"

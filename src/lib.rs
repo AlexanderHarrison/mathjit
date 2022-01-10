@@ -11,14 +11,14 @@ pub type RetPtr = unsafe extern "C" fn(input: *const f32, output: *mut f32, len:
 pub struct CompiledEquation {
     pub eq: Equation,
     pub raw_fn: RetPtr,
-    _buf: dynasmrt::mmap::ExecutableBuffer,
+    _buf: assemble::FuncBuffer,
 }
  
 impl CompiledEquation {
     pub fn new(eq: &Equation) -> Self {
         let high_level_instructions = compile::compile_equation(eq);
 
-        let (buf, raw_fn) = assemble::assemble(high_level_instructions, eq.variables.len());
+        let (raw_fn, buf) = assemble::assemble(high_level_instructions, eq.variables.len());
 
         Self {
             eq: eq.clone(),

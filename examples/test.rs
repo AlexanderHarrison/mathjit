@@ -1,7 +1,7 @@
 use eq_parse::Variable;
 
 fn main() {
-    let mut eq = eq_parse::parse_equation("- x +2.0x - x").unwrap();
+    let mut eq = eq_parse::parse_equation("2x+1").unwrap();
     //eq.set_variable_order(vec![Variable('x'), Variable('y'), Variable('z')]).unwrap();
     eq.set_variable_order(vec![Variable('x')]).unwrap();
     let compiled = mathjit::CompiledEquation::new(&eq);
