@@ -10,17 +10,22 @@ use crate::assemble::{LabelsSSE, LabelsAVX};
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Inst {
-    MoveFReg {dest: FloatReg, source: FloatReg}, 
-    MoveFLit {dest: FloatReg, literal: LiteralIndex}, 
+    MoveF {dest: FloatReg, source: FloatSource}, 
     Negate(FloatReg),
-    AddF {dest: FloatReg, op: FloatReg},
-    SubF {dest: FloatReg, op: FloatReg},
-    MulF {dest: FloatReg, op: FloatReg},
-    DivF {dest: FloatReg, op: FloatReg}
+    AddF {dest: FloatReg, source: FloatSource},
+    SubF {dest: FloatReg, source: FloatSource},
+    MulF {dest: FloatReg, source: FloatSource},
+    DivF {dest: FloatReg, source: FloatSource}
 }
 
 type LiteralIndex = u8;
 type VariableIndex = u8;
+
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum FloatSource {
+    Register(FloatReg),
+    Literal(LiteralIndex),
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct FloatRegState {
@@ -125,13 +130,13 @@ pub fn compile_operation(
         Operation::Literal(n) => {
             let lit_index = literal_index(&mut info.literals, *n);
             info.insts.push(
-                Inst::MoveFLit { dest: reg_state.low_reg(), literal: lit_index}
+                Inst::MoveF { dest: reg_state.low_reg(), source: FloatSource::Literal(lit_index)}
             );
         },
         Operation::Variable(v) => {
             let v_i = variable_index(info.vars, v);
             info.insts.push(
-                Inst::MoveFReg { dest: reg_state.low_reg(), source: FloatReg(v_i) }
+                Inst::MoveF { dest: reg_state.low_reg(), source: FloatSource::Register(FloatReg(v_i)) }
             );
         },
         Operation::Neg(op) => {
@@ -145,23 +150,22 @@ pub fn compile_operation(
             for op in ops[1..].iter() {
                 match op {
                     Operation::Neg(next_op) => {
-                        if let Operation::Variable(v) = &**next_op {
-                            let op = FloatReg(variable_index(info.vars, &v));
-                            info.insts.push(Inst::SubF { dest: reg_state.low_reg(), op });
+                        let source = if let Operation::Variable(v) = &**next_op {
+                            FloatSource::Register(FloatReg(variable_index(info.vars, &v)))
                         } else {
                             compile_operation(next_op, inc_reg_state, info);
-                            let op = inc_reg_state.low_reg();
-                            info.insts.push(Inst::SubF { dest: reg_state.low_reg(), op } );
-                        }
+                            FloatSource::Register(inc_reg_state.low_reg())
+                        };
+                        info.insts.push(Inst::SubF { dest: reg_state.low_reg(), source });
                     },
                     Operation::Variable(v) => {
-                        let op = FloatReg(variable_index(info.vars, v));
-                        info.insts.push(Inst::AddF { dest: reg_state.low_reg(), op });
+                        let source = FloatSource::Register(FloatReg(variable_index(info.vars, v)));
+                        info.insts.push(Inst::AddF { dest: reg_state.low_reg(), source });
                     },
                     op => {
                         compile_operation(op, inc_reg_state, info);
-                        let op = inc_reg_state.low_reg();
-                        info.insts.push(Inst::AddF { dest: reg_state.low_reg(), op } );
+                        let source = FloatSource::Register(reg_state.low_reg());
+                        info.insts.push(Inst::AddF { dest: reg_state.low_reg(), source });
                     }
                 }
             }
@@ -172,14 +176,14 @@ pub fn compile_operation(
             for op in ops[1..].iter() {
                 match op {
                     Operation::Variable(v) => {
-                        let op = FloatReg(variable_index(info.vars, v));
-                        info.insts.push(Inst::MulF { dest: reg_state.low_reg(), op });
+                        let source = FloatSource::Register(FloatReg(variable_index(info.vars, v)));
+                        info.insts.push(Inst::MulF { dest: reg_state.low_reg(), source });
                     },
                     op => {
                         let inc_reg_state = reg_state.incremented();
                         compile_operation(op, inc_reg_state, info);
-                        let op = inc_reg_state.low_reg();
-                        info.insts.push(Inst::MulF { dest: reg_state.low_reg(), op } );
+                        let source = FloatSource::Register(inc_reg_state.low_reg());
+                        info.insts.push(Inst::MulF { dest: reg_state.low_reg(), source } );
                     }
                 }
             }
@@ -188,14 +192,14 @@ pub fn compile_operation(
             compile_operation(&ops.0, reg_state, info);
             match &ops.1 {
                 Operation::Variable(v) => {
-                    let op = FloatReg(variable_index(info.vars, v));
-                    info.insts.push(Inst::DivF { dest: reg_state.low_reg(), op });
+                    let source = FloatSource::Register(FloatReg(variable_index(info.vars, v)));
+                    info.insts.push(Inst::DivF { dest: reg_state.low_reg(), source });
                 }
                 op => {
                     let inc_reg_state = reg_state.incremented();
                     compile_operation(op, inc_reg_state, info);
-                    let op = inc_reg_state.low_reg();
-                    info.insts.push(Inst::DivF { dest: reg_state.low_reg(), op } );
+                    let source = FloatSource::Register(inc_reg_state.low_reg());
+                    info.insts.push(Inst::DivF { dest: reg_state.low_reg(), source } );
                 }
             }
         }
@@ -213,28 +217,48 @@ impl Inst {
                 use iced_x86::code_asm::xmmword_ptr;
                 assembler.xorps(low.to_native_reg(), xmmword_ptr(labels.negation_literal))?;
             },
-            Inst::MoveFReg {dest, source} if dest == source => {},
-            Inst::MoveFReg {dest, source} => {
-                assembler.movss(dest.to_native_reg(), source.to_native_reg())?;
+            Inst::MoveF {dest, source: FloatSource::Register(source_reg) } if source_reg == dest => (),
+            Inst::MoveF {dest, source: FloatSource::Register(source_reg) } => {
+                assembler.movss(dest.to_native_reg(), source_reg.to_native_reg())?;
             },
-            Inst::MoveFLit {dest, literal: lit_index} => {
+            Inst::MoveF {dest, source: FloatSource::Literal(lit_index)} => {
                 use iced_x86::code_asm::dword_ptr;
                 assembler.movd(
                     dest.to_native_reg(),
                     dword_ptr(labels.expression_literals[lit_index as usize])
                 )?;
             },
-            Inst::AddF {dest, op} => {
-                assembler.addss(dest.to_native_reg(), op.to_native_reg())?;
+            Inst::AddF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.addss(dest.to_native_reg(), source_reg.to_native_reg())?;
             },
-            Inst::SubF {dest, op} => {
-                assembler.subss(dest.to_native_reg(), op.to_native_reg())?;
+            Inst::AddF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::dword_ptr;
+                let lit_ptr = dword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.addss(dest.to_native_reg(), lit_ptr)?;
             },
-            Inst::MulF {dest, op} => {
-                assembler.mulss(dest.to_native_reg(), op.to_native_reg())?;
+            Inst::SubF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.subss(dest.to_native_reg(), source_reg.to_native_reg())?;
             },
-            Inst::DivF {dest, op} => {
-                assembler.divss(dest.to_native_reg(), op.to_native_reg())?;
+            Inst::SubF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::dword_ptr;
+                let lit_ptr = dword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.subss(dest.to_native_reg(), lit_ptr)?;
+            },
+            Inst::MulF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.mulss(dest.to_native_reg(), source_reg.to_native_reg())?;
+            },
+            Inst::MulF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::dword_ptr;
+                let lit_ptr = dword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.mulss(dest.to_native_reg(), lit_ptr)?;
+            },
+            Inst::DivF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.divss(dest.to_native_reg(), source_reg.to_native_reg())?;
+            },
+            Inst::DivF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::dword_ptr;
+                let lit_ptr = dword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.divss(dest.to_native_reg(), lit_ptr)?;
             },
         }
 
@@ -251,28 +275,48 @@ impl Inst {
                 use iced_x86::code_asm::xmmword_ptr;
                 assembler.xorps(low.to_native_reg(), xmmword_ptr(labels.negation_literal))?;
             },
-            Inst::MoveFReg {dest, source} if dest == source => {},
-            Inst::MoveFReg {dest, source} => {
-                assembler.movaps(dest.to_native_reg(), source.to_native_reg())?;
+            Inst::MoveF {dest, source: FloatSource::Register(source_reg) } if source_reg == dest => (),
+            Inst::MoveF {dest, source: FloatSource::Register(source_reg) } => {
+                assembler.movaps(dest.to_native_reg(), source_reg.to_native_reg())?;
             },
-            Inst::MoveFLit {dest, literal: lit_index} => {
-                use iced_x86::code_asm::dword_ptr;
+            Inst::MoveF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::xmmword_ptr;
                 assembler.movaps(
                     dest.to_native_reg(),
-                    dword_ptr(labels.expression_literals[lit_index as usize])
+                    xmmword_ptr(labels.expression_literals[lit_index as usize])
                 )?;
             },
-            Inst::AddF {dest, op} => {
-                assembler.addps(dest.to_native_reg(), op.to_native_reg())?;
+            Inst::AddF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.addps(dest.to_native_reg(), source_reg.to_native_reg())?;
             },
-            Inst::SubF {dest, op} => {
-                assembler.subps(dest.to_native_reg(), op.to_native_reg())?;
+            Inst::AddF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::dword_ptr;
+                let lit_ptr = dword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.addps(dest.to_native_reg(), lit_ptr)?;
             },
-            Inst::MulF {dest, op} => {
-                assembler.mulps(dest.to_native_reg(), op.to_native_reg())?;
+            Inst::SubF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.subps(dest.to_native_reg(), source_reg.to_native_reg())?;
             },
-            Inst::DivF {dest, op} => {
-                assembler.divps(dest.to_native_reg(), op.to_native_reg())?;
+            Inst::SubF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::xmmword_ptr;
+                let lit_ptr = xmmword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.subps(dest.to_native_reg(), lit_ptr)?;
+            },
+            Inst::MulF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.mulps(dest.to_native_reg(), source_reg.to_native_reg())?;
+            },
+            Inst::MulF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::xmmword_ptr;
+                let lit_ptr = xmmword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.mulps(dest.to_native_reg(), lit_ptr)?;
+            },
+            Inst::DivF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.divps(dest.to_native_reg(), source_reg.to_native_reg())?;
+            },
+            Inst::DivF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::xmmword_ptr;
+                let lit_ptr = xmmword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.divps(dest.to_native_reg(), lit_ptr)?;
             },
         }
 
@@ -284,35 +328,54 @@ impl Inst {
         assembler: &mut iced_x86::code_asm::CodeAssembler,
         labels: &LabelsAVX,
     ) -> Result<(), iced_x86::code_asm::IcedError> {
+        use iced_x86::code_asm::xmmword_ptr;
         match self {
             Inst::Negate(low) => {
-                use iced_x86::code_asm::dword_ptr;
-                let next_low = FloatReg(low.0 + 1).to_native_reg();
-                assembler.vmovd(next_low, dword_ptr(labels.negation_literal))?;
-                assembler.vxorps(low.to_native_reg(), low.to_native_reg(), next_low)?;
+                let neg_lit_ptr = xmmword_ptr(labels.negation_literal);
+                assembler.vxorps(low.to_native_reg(), low.to_native_reg(), neg_lit_ptr)?;
             },
-            Inst::MoveFReg {dest, source} if dest == source => {},
-            Inst::MoveFReg {dest, source} => {
-                assembler.vmovaps(dest.to_native_reg(), source.to_native_reg())?;
+            Inst::MoveF {dest, source: FloatSource::Register(source_reg) } if source_reg == dest => (),
+            Inst::MoveF {dest, source: FloatSource::Register(source_reg) } => {
+                assembler.vmovaps(dest.to_native_reg(), source_reg.to_native_reg())?;
             },
-            Inst::MoveFLit {dest, literal: lit_index} => {
+            Inst::MoveF {dest, source: FloatSource::Literal(lit_index)} => {
                 use iced_x86::code_asm::dword_ptr;
                 assembler.vmovd(
                     dest.to_native_reg(),
                     dword_ptr(labels.expression_literals[lit_index as usize])
                 )?;
             },
-            Inst::AddF {dest, op} => {
-                assembler.vaddss(dest.to_native_reg(), dest.to_native_reg(), op.to_native_reg())?;
+            Inst::AddF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.vaddss(dest.to_native_reg(), dest.to_native_reg(), source_reg.to_native_reg())?;
             },
-            Inst::SubF {dest, op} => {
-                assembler.vsubss(dest.to_native_reg(), dest.to_native_reg(), op.to_native_reg())?;
+            Inst::AddF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::dword_ptr;
+                let lit_ptr = dword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.vaddss(dest.to_native_reg(), dest.to_native_reg(), lit_ptr)?;
             },
-            Inst::MulF {dest, op} => {
-                assembler.vmulss(dest.to_native_reg(), dest.to_native_reg(), op.to_native_reg())?;
+            Inst::SubF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.vsubss(dest.to_native_reg(), dest.to_native_reg(), source_reg.to_native_reg())?;
             },
-            Inst::DivF {dest, op} => {
-                assembler.vdivss(dest.to_native_reg(), dest.to_native_reg(), op.to_native_reg())?;
+            Inst::SubF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::dword_ptr;
+                let lit_ptr = dword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.vsubss(dest.to_native_reg(), dest.to_native_reg(), lit_ptr)?;
+            },
+            Inst::MulF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.vmulss(dest.to_native_reg(), dest.to_native_reg(), source_reg.to_native_reg())?;
+            },
+            Inst::MulF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::dword_ptr;
+                let lit_ptr = dword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.vmulss(dest.to_native_reg(), dest.to_native_reg(), lit_ptr)?;
+            },
+            Inst::DivF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.vdivss(dest.to_native_reg(), dest.to_native_reg(), source_reg.to_native_reg())?;
+            },
+            Inst::DivF {dest, source: FloatSource::Literal(lit_index)} => {
+                use iced_x86::code_asm::dword_ptr;
+                let lit_ptr = dword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.vdivss(dest.to_native_reg(), dest.to_native_reg(), lit_ptr)?;
             },
         }
 
@@ -324,32 +387,47 @@ impl Inst {
         assembler: &mut iced_x86::code_asm::CodeAssembler,
         labels: &LabelsAVX,
     ) -> Result<(), iced_x86::code_asm::IcedError> {
+        use iced_x86::code_asm::ymmword_ptr;
         match self {
             Inst::Negate(low) => {
-                use iced_x86::code_asm::dword_ptr;
-                let next_low = FloatReg(low.0 + 1).to_avx_reg();
-                assembler.vbroadcastss(next_low, dword_ptr(labels.negation_literal))?;
-                assembler.vxorps(low.to_avx_reg(), low.to_avx_reg(), next_low)?;
+                let neg_lit_ptr = ymmword_ptr(labels.negation_literal);
+                assembler.vxorps(low.to_avx_reg(), low.to_avx_reg(), neg_lit_ptr)?;
             },
-            Inst::MoveFReg {dest, source} if dest == source => {},
-            Inst::MoveFReg {dest, source} => {
-                assembler.vmovaps(dest.to_avx_reg(), source.to_avx_reg())?;
+            Inst::MoveF {dest, source: FloatSource::Register(source_reg) } if source_reg == dest => (),
+            Inst::MoveF {dest, source: FloatSource::Register(source_reg) } => {
+                assembler.vmovaps(dest.to_avx_reg(), source_reg.to_avx_reg())?;
             },
-            Inst::MoveFLit {dest, literal: lit_index} => {
-                use iced_x86::code_asm::dword_ptr;
-                assembler.vbroadcastss(dest.to_avx_reg(), dword_ptr(labels.expression_literals[lit_index as usize]))?;
+            Inst::MoveF {dest, source: FloatSource::Literal(lit_index)} => {
+                let lit_ptr = ymmword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.vmovaps(dest.to_avx_reg(), lit_ptr)?;
             },
-            Inst::AddF {dest, op} => {
-                assembler.vaddps(dest.to_avx_reg(), dest.to_avx_reg(), op.to_avx_reg())?;
+            Inst::AddF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.vaddps(dest.to_avx_reg(), dest.to_avx_reg(), source_reg.to_avx_reg())?;
             },
-            Inst::SubF {dest, op} => {
-                assembler.vsubps(dest.to_avx_reg(), dest.to_avx_reg(), op.to_avx_reg())?;
+            Inst::AddF {dest, source: FloatSource::Literal(lit_index)} => {
+                let lit_ptr = ymmword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.vaddps(dest.to_avx_reg(), dest.to_avx_reg(), lit_ptr)?;
             },
-            Inst::MulF {dest, op} => {
-                assembler.vmulps(dest.to_avx_reg(), dest.to_avx_reg(), op.to_avx_reg())?;
+            Inst::SubF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.vsubps(dest.to_avx_reg(), dest.to_avx_reg(), source_reg.to_avx_reg())?;
             },
-            Inst::DivF {dest, op} => {
-                assembler.vdivps(dest.to_avx_reg(), dest.to_avx_reg(), op.to_avx_reg())?;
+            Inst::SubF {dest, source: FloatSource::Literal(lit_index)} => {
+                let lit_ptr = ymmword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.vsubps(dest.to_avx_reg(), dest.to_avx_reg(), lit_ptr)?;
+            },
+            Inst::MulF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.vmulps(dest.to_avx_reg(), dest.to_avx_reg(), source_reg.to_avx_reg())?;
+            },
+            Inst::MulF {dest, source: FloatSource::Literal(lit_index)} => {
+                let lit_ptr = ymmword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.vmulps(dest.to_avx_reg(), dest.to_avx_reg(), lit_ptr)?;
+            },
+            Inst::DivF {dest, source: FloatSource::Register(source_reg)} => {
+                assembler.vdivps(dest.to_avx_reg(), dest.to_avx_reg(), source_reg.to_avx_reg())?;
+            },
+            Inst::DivF {dest, source: FloatSource::Literal(lit_index)} => {
+                let lit_ptr = ymmword_ptr(labels.expression_literals[lit_index as usize]);
+                assembler.vdivps(dest.to_avx_reg(), dest.to_avx_reg(), lit_ptr)?;
             },
         }
 
