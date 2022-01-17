@@ -1,34 +1,46 @@
-use eq_parse::Equation;
+use expr_parse::Expression;
 
-mod compile;
-mod assemble;
+pub mod compile;
+pub mod assemble;
 
-pub use eq_parse;
+pub use expr_parse;
 
-pub type RetPtr = unsafe extern "C" fn(input: *const f32, output: *mut f32, len: u64);
-//pub type RetPtr = unsafe extern "C" fn(input: *const f32, output: *mut f32, len: usize);
+pub type RetPtr = unsafe extern "C" fn(input: *const f32, output: *mut f32, output_len: u64);
 
-pub struct CompiledEquation {
-    pub eq: Equation,
+pub struct CompiledExpression {
+    pub expr: Expression,
     pub raw_fn: RetPtr,
     _buf: assemble::FuncBuffer,
 }
  
-impl CompiledEquation {
-    pub fn new(eq: &Equation) -> Self {
-        let high_level_instructions = compile::compile_equation(eq);
+impl CompiledExpression {
+    pub fn new(expr: &Expression) -> Self {
+        let compile_info = compile::compile_expression(expr);
 
-        let (raw_fn, buf) = assemble::assemble(high_level_instructions, eq.variables.len());
+        let (raw_fn, buf) = assemble::assemble(&compile_info);
 
         Self {
-            eq: eq.clone(),
+            expr: expr.clone(),
             raw_fn,
             _buf: buf
         }
     }
 
-    pub fn temp_eval(&self, vars: &[f32]) -> Box<[f32]> {
-        let var_count = self.eq.variables.len();
+    /// Autodetect if has_avx is None
+    pub unsafe fn with_force_feature(expr: &Expression, has_avx: Option<bool>) -> Self {
+        let compile_info = compile::compile_expression(expr);
+
+        let (raw_fn, buf) = assemble::assemble_with_force_feature(&compile_info, has_avx);
+
+        Self {
+            expr: expr.clone(),
+            raw_fn,
+            _buf: buf
+        }
+    }
+
+    pub fn eval(&self, vars: &[f32]) -> Box<[f32]> {
+        let var_count = self.expr.variables.len();
         assert!(vars.len() % var_count == 0);
         let out_count = vars.len() / var_count;
         let mut output = vec![0.0; out_count].into_boxed_slice();
@@ -36,6 +48,16 @@ impl CompiledEquation {
             (self.raw_fn)(vars.as_ptr(), output.as_mut_ptr(), out_count as u64);
         };
         output
+    }
+
+    pub fn eval_with_out_buf(&self, vars: &[f32], out_buf: &mut [f32]) {
+        let var_count = self.expr.variables.len();
+        let out_count = vars.len() / var_count;
+        assert!(vars.len() % var_count == 0);
+        assert!(out_buf.len() == out_count);
+        unsafe { 
+            (self.raw_fn)(vars.as_ptr(), out_buf.as_mut_ptr(), out_count as u64);
+        };
     }
 
     //pub fn evaluate(&self, data: &[f32]) -> Box<[f32]> {

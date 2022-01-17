@@ -1,9 +1,8 @@
-use eq_parse::Variable;
+use mathjit::{CompiledExpression, expr_parse::Expression};
 
 fn main() {
-    let mut eq = eq_parse::parse_equation("2x+1").unwrap();
-    //eq.set_variable_order(vec![Variable('x'), Variable('y'), Variable('z')]).unwrap();
-    eq.set_variable_order(vec![Variable('x')]).unwrap();
-    let compiled = mathjit::CompiledEquation::new(&eq);
-    println!("{:?}", compiled.temp_eval(&[1.0, 2.0, 3.0, 4.0, 5.0, 7.0]));
+    let expr_string = "-x*(2*x*(-x+4)*(1+x*x-2*x)-5*(-6*(1+x*(4-2*x))*x*x-(-2.4)*x*x+4.1))".parse::<Expression>().unwrap();
+    for _ in 0..100000 {
+        criterion::black_box(CompiledExpression::new(&expr_string));
+    }
 }

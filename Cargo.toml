@@ -5,13 +5,16 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[profile.release]
+debug = true
+
 [dependencies]
-eq_parse = { path = "../eq_parse/" }
+expr_parse = { path = "../expr_parse/" }
 iced-x86 = { version = "1.15", features = ["code_asm"] }
 memmap2 = "0.5"
 
 [dev-dependencies]
-criterion = "0.3"
+criterion = { version = "0.3", features = [] }
 
 [[bench]]
 name = "benchmarks"
