@@ -1,8 +1,10 @@
-use mathjit::{CompiledExpression, expr_parse::Expression};
+use mathjit::expr_parse::Expression;
 
 fn main() {
-    let expr_string = "-x*(2*x*(-x+4)*(1+x*x-2*x)-5*(-6*(1+x*(4-2*x))*x*x-(-2.4)*x*x+4.1))".parse::<Expression>().unwrap();
-    for _ in 0..100000 {
-        criterion::black_box(CompiledExpression::new(&expr_string));
-    }
+    let mut expr = "ln(x*(2*x+z+7))*(1 + sqrt(2) + y / 1.0)".parse::<Expression>().unwrap();
+    println!("{}", expr.operation);
+    //mathjit::compile::optimise::expand_polynomials(&mut expr.operation);
+    println!("{}", expr.operation);
+    mathjit::compile::optimise::precompute(&mut expr.operation);
+    println!("{}", expr.operation);
 }
