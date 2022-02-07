@@ -9,9 +9,10 @@ edition = "2021"
 debug = true
 
 [dependencies]
-expr_parse = { path = "../expr_parse/" }
 iced-x86 = { version = "1.15", features = ["code_asm"] }
 memmap2 = "0.5"
+meval = "0.2"
+tinystr = "0.4.12"
 
 [dev-dependencies]
 criterion = { version = "0.3", features = [] }

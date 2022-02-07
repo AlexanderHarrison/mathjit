@@ -2,8 +2,7 @@ use expr_parse::Expression;
 
 pub mod compile;
 pub mod assemble;
-
-pub use expr_parse;
+pub mod expr_parse;
 
 pub type ExprFnPtr = unsafe extern "C" fn(input: *const f32, output: *mut f32, output_len: u64);
 
