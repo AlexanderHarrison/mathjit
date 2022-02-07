@@ -7,6 +7,7 @@ Currently only supports single-precision floating-point math on x86-64.
 Supported math operations for compilation:
 - Addition, subtraction, multiplication, division
 - Square root
+
 More will be added in the near future.
 
 ## Example Usage
